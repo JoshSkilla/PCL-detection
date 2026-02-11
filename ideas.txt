@@ -1,0 +1,20 @@
+
+Using PCL types:
+    - contrasitive loss learning extension
+    - Multiple heads (each PCL type)
+Using strength of PCL (0-4)
+    Penalising based on strength of PCL (0-4)
+        - may be bad idea since level 4 is easiest, & F1 depdens on birderline cases
+        - maybe introduce this early in training, but then weight other way later in training
+        - or weight subtle PCL the highest - annotation noise + instability on borderline boundary
+    Multiple heads:
+    	- Head A: binary
+        - Head B: predict severity (2/3/4 scaled)
+    Focal loss 
+Prompt based isntruction tuning
+Using better encoder than the baseline
+Data augmentation?
+Fine tuning
+
+Combination (using DeBerta)
+L = BCE(binary) + λ * BCE(multilabel) + μ * Focal(binary)
