@@ -1,20 +1,57 @@
 
-Using PCL types:
-    - contrasitive loss learning extension
-    - Multiple heads (each PCL type)
-Using strength of PCL (0-4)
-    Penalising based on strength of PCL (0-4)
-        - may be bad idea since level 4 is easiest, & F1 depdens on birderline cases
-        - maybe introduce this early in training, but then weight other way later in training
-        - or weight subtle PCL the highest - annotation noise + instability on borderline boundary
-    Multiple heads:
-    	- Head A: binary
-        - Head B: predict severity (2/3/4 scaled)
-    Focal loss 
-Prompt based isntruction tuning
-Using better encoder than the baseline
-Data augmentation?
-Fine tuning
+Early ideas:
+    Using PCL types:
+        - contrasitive loss learning extension
+        - Multiple heads (each PCL type)
+    Using strength of PCL (0-4)
+        Penalising based on strength of PCL (0-4)
+            - may be bad idea since level 4 is easiest, & F1 depdens on birderline cases
+            - maybe introduce this early in training, but then weight other way later in training
+            - or weight subtle PCL the highest - annotation noise + instability on borderline boundary
+        Multiple heads:
+            - Head A: binary
+            - Head B: predict severity (2/3/4 scaled)
+        Focal loss 
+    Weighted loss to compensate for more non-PCL over PCL examples
+    Prompt based isntruction tuning
+    Using better encoder than the baseline
+    Data augmentation?
+    Fine tuning
 
-Combination (using DeBerta)
-L = BCE(binary) + λ * BCE(multilabel) + μ * Focal(binary)
+    Combination (using DeBerta)
+    L = BCE(binary) + λ * BCE(multilabel) + μ * Focal(binary)
+
+
+Loss objective and head approach
+    Steps:
+    1. binary baseline with strong model (DeBERTa) 
+    2.  a. weigthed BCE with class weights
+        b. Focal loss
+    3. Threshold tuning
+    4. PCL subtype aware sampling
+    5. Add masked aux head 
+
+Training data (using spans) approach with loss and head
+    Spans may provide many (dense) psotivie PCL labels which may solve class imbalance
+    Paragraph → contains → spans → contain → rhetorical cues → imply PCL
+    paragraph → windows → scores → aggregate → final prediction
+    Binary classification is actually a multiple instance learning problem
+
+    Train on paragraphs & spans:
+    - full paragraphs with label_bin head
+    - spans with span_is_pcl = 1 head (and optionally category labels)
+
+    BUT sample non_PCL span from non-PCL paragraphs, or/and non-overlapping regions of PCL paragraphs that aren't covered by any PCL span
+
+
+    Localised PCL span theory
+    - due to shorter spans, does not depend on rest of paragraphs
+    - Two stage detect then aggregate
+        - Stage 1: Span scorer (PCL likelihood)
+        - Stage 2: Sample many spans from paragraph and aggregate scores & threshold for prediction
+        - can fail if misses span with true evidence or if PCL depended on wider context
+
+    Augmentation:
+    Could do masked and dropout on paragraphs without masking span for augmentation
+    Train on span-only too
+        May shift distribution being modelled
