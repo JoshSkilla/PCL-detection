@@ -6,6 +6,15 @@ __pycache__/
 # C extensions
 *.so
 
+# Ignore all Optuna and Trainer checkpoints, models, and run outputs
+runs/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.log
+*.jsonl
+
 # Distribution / packaging
 .Python
 build/
