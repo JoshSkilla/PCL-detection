@@ -1,3 +1,5 @@
+import re
+
 from transformers import AutoTokenizer
 
 def make_tokenized_datasets(model_name: str, max_length: int, ds_train_raw, ds_val_raw, ds_dev_raw):
@@ -28,3 +30,20 @@ def make_tokenized_datasets(model_name: str, max_length: int, ds_train_raw, ds_v
         ds_dev = ds_dev.rename_column("label_bin", "labels")
 
     return tok, ds_train, ds_val, ds_dev
+
+
+def clean_and_prune_by_tokens(df, tokenizer_name, text_col="text", label_col="label_bin", max_pos_tokens=None):
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
+    df[text_col] = df[text_col].astype(str).map(clean_text)
+    if max_pos_tokens is not None:
+        # Compute token counts
+        token_counts = df[text_col].map(lambda x: len(tokenizer.encode(x, add_special_tokens=True)))
+        mask = ~((df[label_col] == 1) & (token_counts > max_pos_tokens))
+        df = df[mask].reset_index(drop=True)
+    return df
+
+def clean_text(t):
+    t = re.sub(r"&\w+;", " ", t)
+    t = re.sub(r"http\S+", " ", t)
+    t = re.sub(r"\s{2,}", " ", t)
+    return t.strip()

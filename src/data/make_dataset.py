@@ -139,13 +139,6 @@ def make_pcl_task2_dataset(save: bool = True):
     return spans_df
 
 
-def clean_text(t):
-    t = re.sub(r"&\w+;", " ", t)
-    t = re.sub(r"http\S+", " ", t)
-    t = re.sub(r"\s{2,}", " ", t)
-    return t.strip()
-
-
 if __name__ == "__main__":
     make_pcl_task1_dataset(save=True)
     # merge_pcl_task2_dataset(save=True)
