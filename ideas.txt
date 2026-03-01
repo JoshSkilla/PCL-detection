@@ -55,3 +55,10 @@ Training data (using spans) approach with loss and head
     Could do masked and dropout on paragraphs without masking span for augmentation
     Train on span-only too
         May shift distribution being modelled
+
+
+
+
+try max len smaller like 192 or 128
+try max, top k weighted, normal dist window (over all) like span length normal dist (max of these signals), attention layer
+albert or another model 
