@@ -53,10 +53,13 @@ def clean_text_light(text: str) -> str:
         text: Raw text
         
     Returns:
-        Cleaned text with normalized whitespace and HTML entities removed
+        Cleaned text with normalized whitespace, HTML tags and entities removed
     """
     if not isinstance(text, str):
         return ""
+    
+    # Remove HTML tags (e.g., <h>, <p>, <div>, etc.)
+    text = re.sub(r'<[^>]+>', ' ', text)
     
     # HTML entities (common in web-scraped text)
     text = re.sub(r"&nbsp;", " ", text)
@@ -105,15 +108,16 @@ def segment_paragraph_into_units(text: str) -> List[TextUnit]:
     """
     Segment paragraph using spaCy sentences + optional clause splitting.
     
-    Applies lightweight cleaning before segmentation to improve spaCy parsing.
-    Splits on safe phrase boundaries: ", ", "; ", " — " (em dash with spaces).
-    Does NOT split on periods (spaCy handles abbreviations) or hyphens in words.
+    Returns BOTH full sentences AND comma-separated clauses to preserve context.
+    This allows the sampler to use either short phrases OR full sentences with commas,
+    giving the model more diverse training examples.
     
     Args:
         text: Paragraph text to segment
         
     Returns:
         List of TextUnit objects with char offsets and token counts.
+        Includes both full sentences and their comma-split sub-clauses.
     """
     # Clean text before segmentation (preserves char offsets within cleaned version)
     text = clean_text_light(text)
@@ -128,59 +132,62 @@ def segment_paragraph_into_units(text: str) -> List[TextUnit]:
     doc = nlp(text)
     sentences = list(doc.sents)
     
-    # Safe delimiter patterns for clause splitting (with surrounding whitespace)
-    clause_delimiters = [
-        (r'\s+,\s+', ', '),      # comma with spaces
-        (r'\s+;\s+', '; '),      # semicolon with spaces  
-        (r'\s+—\s+', ' — '),     # em dash with spaces
-        (r'\s+–\s+', ' – '),     # en dash with spaces
-    ]
-    
     for sent in sentences:
         sent_start = sent.start_char
         sent_end = sent.end_char
         sent_text = text[sent_start:sent_end]
         
-        # Try to split into clauses
-        clause_parts = [sent_text]
-        for pattern, delimiter in clause_delimiters:
-            new_parts = []
-            for part in clause_parts:
-                # Split but keep delimiter at end of each part (except last)
-                splits = re.split(pattern, part)
-                if len(splits) > 1:
-                    for i, split in enumerate(splits[:-1]):
-                        new_parts.append(split + delimiter.strip())
-                    new_parts.append(splits[-1])
-                else:
-                    new_parts.append(part)
-            clause_parts = new_parts
-        
-        # Convert clause parts to TextUnits with proper char offsets
-        current_pos = sent_start
-        for clause in clause_parts:
-            clause = clause.strip()
-            if not clause:
-                continue
-            
-            # Find this clause in the original text starting from current_pos
-            clause_offset = text.find(clause, current_pos, sent_end)
-            if clause_offset == -1:
-                # Fallback: use current_pos
-                clause_offset = current_pos
-            
-            clause_start = clause_offset
-            clause_end = clause_offset + len(clause)
-            clause_text = text[clause_start:clause_end]
-            
+        # ALWAYS add the full sentence first (preserves context with commas)
+        sent_text_clean = sent_text.strip()
+        if sent_text_clean:
             units.append(TextUnit(
-                start_char=clause_start,
-                end_char=clause_end,
-                text=clause_text,
-                token_len=len(word_tokenize(clause_text))
+                text=sent_text_clean,
+                start_char=sent_start,
+                end_char=sent_end,
+                token_len=len(word_tokenize(sent_text_clean))
             ))
+        
+        # THEN split into clauses using simple regex (comma, semicolon, em/en dash)
+        # This captures focused phrases while full sentence preserves context
+        clause_split_pattern = r'[,;—–]'  # Split on these delimiters
+        clause_parts = re.split(clause_split_pattern, sent_text)
+        
+        # Only add sub-clauses if sentence actually contains delimiters (more than 1 part)
+        if len(clause_parts) > 1:
+            # Track position to find clauses in original text
+            search_start = sent_start
             
-            current_pos = clause_end
+            for part in clause_parts:
+                part_stripped = part.strip()
+                
+                # Skip empty or single-word clauses (uninformative)
+                if not part_stripped or len(part_stripped.split()) < 2:
+                    # Still need to advance search position
+                    part_pos = text.find(part, search_start, sent_end)
+                    if part_pos >= 0:
+                        search_start = part_pos + len(part)
+                    continue
+                
+                # Find clause position in original text
+                clause_start = text.find(part_stripped, search_start, sent_end)
+                if clause_start < 0:
+                    # Fallback: try without stripping
+                    clause_start = text.find(part, search_start, sent_end)
+                    if clause_start < 0:
+                        continue  # Can't locate this clause, skip it
+                    part_stripped = part
+                
+                clause_end = clause_start + len(part_stripped)
+                
+                units.append(TextUnit(
+                    start_char=clause_start,
+                    end_char=clause_end,
+                    text=part_stripped,
+                    token_len=len(word_tokenize(part_stripped))
+                ))
+                
+                # Advance search position for next clause
+                search_start = clause_end
     
     return units
 
@@ -230,8 +237,12 @@ def compute_deterministic_anchors(n_units: int, paragraph_token_len: int,
     if n_units == 0:
         return []
     
-    # Scale anchors based on paragraph length
-    n_anchors = max(min_anchors, min(max_anchors, int(np.ceil(paragraph_token_len / median_span_len))))
+    # Scale anchors based on paragraph length with boost for short paragraphs
+    # Use more anchors for better diversity
+    base_anchors = int(np.ceil(paragraph_token_len / median_span_len))
+    # Boost: ensure at least 2 anchors per unit for short paragraphs
+    boosted = max(min(n_units, min_anchors * 2), base_anchors)
+    n_anchors = max(min_anchors, min(max_anchors, boosted))
     
     # Evenly spaced anchors
     if n_anchors >= n_units:
@@ -280,9 +291,10 @@ def is_well_formed_span(text: str, require_letter_start: bool = False,
     if re.match(r'^[a-z]\s', text, re.IGNORECASE):
         return False
     
-    # Reject spans starting with partial words
-    # Examples: "ase of", "tion to"
-    if re.match(r'^[a-z]{1,3}\s', text, re.IGNORECASE) and text[0].islower():
+    # Reject spans starting with partial words (1-2 letter fragments)
+    # Examples: "ase of", "tion to", "er the"
+    # But ALLOW: "and", "but", "the" (valid clause starts)
+    if re.match(r'^[a-z]{2}\s', text) and text[0].islower():
         return False
     
     # Must contain at least one alphanumeric character (not just punctuation/spaces)
@@ -351,7 +363,7 @@ def sample_spans_for_paragraph(
     median_span_len: int = 16,
     max_spans_per_par: int = 20,
     min_anchors: int = 4,
-    max_anchors: int = 10,
+    max_anchors: int = 15,
     overlap_threshold: float = 0.7,
     require_letter_start: bool = False,
 ) -> List[Dict]:
@@ -424,6 +436,10 @@ def sample_spans_for_paragraph(
             pass
         
         span_token_len = len(word_tokenize(span_text))
+        
+        # Filter out single-word spans (uninformative, could be keyword triggering)
+        if span_token_len < 2:
+            continue
         
         candidate_spans.append({
             'span_start_char': span_start,
@@ -513,6 +529,10 @@ def sample_spans_for_paragraph(
             span_token_len = len(word_tokenize(span_text))
             units_covered_list = list(range(actual_anchor, end_unit_idx + 1))
             
+            # Filter out single-word spans (uninformative, could be keyword triggering)
+            if span_token_len < 2:
+                continue
+            
             candidate_spans.append({
                 'span_start_char': span_start,
                 'span_end_char': span_end,
@@ -543,17 +563,19 @@ def sample_spans_for_paragraph(
                 is_duplicate = True
                 break
             
-            # Substring containment check (one span fully contains the other)
+            # Substring containment check - ONLY for very similar lengths
+            # We WANT clauses AND full sentences, so only filter near-duplicates
             s1_start, s1_end = span_range
             s2_start, s2_end = existing_range
+            s1_len = s1_end - s1_start
+            s2_len = s2_end - s2_start
             
-            # Current span is substring of existing span
-            if s1_start >= s2_start and s1_end <= s2_end and (s1_end - s1_start) < (s2_end - s2_start):
-                is_duplicate = True
-                break
-            
-            # Existing span is substring of current span (keep current, remove existing)
-            # This case is handled by iterating forward, so we skip it here
+            # Only filter if substring is >90% of container length (near-duplicate)
+            # This keeps clauses like "In fact" separate from full sentence "In fact, ..."
+            if s1_start >= s2_start and s1_end <= s2_end:
+                if s1_len > 0.9 * s2_len:  # Near-duplicate, filter it
+                    is_duplicate = True
+                    break
         
         if not is_duplicate:
             final_spans.append(span)
