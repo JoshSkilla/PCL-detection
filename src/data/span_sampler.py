@@ -41,6 +41,46 @@ def word_tokenize(text: str) -> List[str]:
     return str(text).split()
 
 
+def clean_text_light(text: str) -> str:
+    """
+    Lightweight text cleaning that preserves structure.
+    
+    Applied during segmentation to improve spaCy parsing without
+    breaking character offset alignment (we clean before segmentation,
+    so offsets remain valid within the cleaned text).
+    
+    Args:
+        text: Raw text
+        
+    Returns:
+        Cleaned text with normalized whitespace and HTML entities removed
+    """
+    if not isinstance(text, str):
+        return ""
+    
+    # HTML entities (common in web-scraped text)
+    text = re.sub(r"&nbsp;", " ", text)
+    text = re.sub(r"&quot;", '"', text)
+    text = re.sub(r"&#8217;|&rsquo;", "'", text)  # curly apostrophe
+    text = re.sub(r"&#8220;|&#8221;|&ldquo;|&rdquo;", '"', text)  # curly quotes
+    text = re.sub(r"&amp;", "&", text)
+    text = re.sub(r"&[a-zA-Z]+;", " ", text)  # other entities → space
+    
+    # URL removal (replace with token to preserve sentence structure)
+    text = re.sub(r"http\S+", "[URL]", text)
+    
+    # Fix punctuation spacing (space before punctuation)
+    text = re.sub(r"\s+([.,!?;:])", r"\1", text)
+    
+    # Normalize multiple spaces/tabs to single space
+    text = re.sub(r"[\t ]{2,}", " ", text)
+    
+    # Normalize line breaks (max 2 consecutive newlines)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    
+    return text.strip()
+
+
 @dataclass
 class TextUnit:
     """Represents a segmented unit of text (sentence or clause)."""
@@ -65,6 +105,7 @@ def segment_paragraph_into_units(text: str) -> List[TextUnit]:
     """
     Segment paragraph using spaCy sentences + optional clause splitting.
     
+    Applies lightweight cleaning before segmentation to improve spaCy parsing.
     Splits on safe phrase boundaries: ", ", "; ", " — " (em dash with spaces).
     Does NOT split on periods (spaCy handles abbreviations) or hyphens in words.
     
@@ -74,6 +115,12 @@ def segment_paragraph_into_units(text: str) -> List[TextUnit]:
     Returns:
         List of TextUnit objects with char offsets and token counts.
     """
+    # Clean text before segmentation (preserves char offsets within cleaned version)
+    text = clean_text_light(text)
+    
+    if not text or len(text.strip()) == 0:
+        return []
+    
     nlp = get_spacy_model()
     units = []
     
@@ -194,19 +241,25 @@ def compute_deterministic_anchors(n_units: int, paragraph_token_len: int,
     return sorted(list(set(anchors)))  # Remove duplicates and sort
 
 
-def is_well_formed_span(text: str, require_letter_start: bool = True, 
+def is_well_formed_span(text: str, require_letter_start: bool = False, 
                         allow_end_punct: bool = True) -> bool:
     """
     Quality filter for span text.
     
     Rejects:
-    - Empty/whitespace-only
-    - Leading punctuation (except quotes)
-    - Starts with comma, period, etc.
+    - Empty/whitespace-only or too short
+    - Starts with bad punctuation: comma, period, semicolon, etc.
+    - Starts mid-word (single letter followed by space)
+    - Only whitespace/punctuation
+    - Truncated words at start (e.g., "dise-")
+    
+    Allows:
+    - Starts with letters, digits, quotes, opening brackets
+    - Standard text patterns
     
     Args:
         text: Span text to validate
-        require_letter_start: Enforce spans start with letter
+        require_letter_start: (Relaxed) Enforce spans start with alphanumeric or quote
         allow_end_punct: Allow punctuation at end (currently not enforced)
         
     Returns:
@@ -214,26 +267,59 @@ def is_well_formed_span(text: str, require_letter_start: bool = True,
     """
     text = text.strip()
     
-    if not text:
+    if not text or len(text) < 3:
         return False
     
-    # Bad start characters
-    bad_starts = {',', '.', ';', ':', ')', ']', '}', '!', '?'}
+    # Bad start characters (obvious sentence fragments)
+    bad_starts = {',', '.', ';', ':', ')', ']', '}', '!', '?', '-', '–', '—', '*', '/'}
     if text[0] in bad_starts:
         return False
     
-    # Leading punctuation pattern (excluding quotes at start)
-    if re.match(r'^[^\w\s"\'«]+', text):
+    # Reject spans that start mid-word (single letter + space/punct)
+    # Examples to reject: "n ,", "e .", "s and"
+    if re.match(r'^[a-z]\s', text, re.IGNORECASE):
         return False
     
-    # Require letter start
-    if require_letter_start and not re.match(r'^[A-Za-z]', text):
+    # Reject spans starting with partial words
+    # Examples: "ase of", "tion to"
+    if re.match(r'^[a-z]{1,3}\s', text, re.IGNORECASE) and text[0].islower():
         return False
     
-    # Optionally check end punctuation (soft requirement)
-    # Don't enforce strictly as some valid spans may not end with punct
+    # Must contain at least one alphanumeric character (not just punctuation/spaces)
+    if not re.search(r'[A-Za-z0-9]', text):
+        return False
+    
+    # Reject if ends with incomplete word (hyphen without space after)
+    if re.search(r'[a-z]-$', text, re.IGNORECASE):
+        return False
+    
+    # RELAXED: Allow quotes, digits, letters, opening brackets at start
+    # Only block if starts with trailing/weird punctuation
+    if require_letter_start:
+        # Accept: letters, digits, quotes, brackets
+        if not re.match(r'^[A-Za-z0-9"\'«\(\[\{]', text):
+            return False
     
     return True
+
+
+def _display_span_text(text: str, max_chars: int = 120) -> str:
+    """
+    Format span text for display with smart truncation.
+    
+    Args:
+        text: Span text
+        max_chars: Maximum characters to show (0 = no limit)
+        
+    Returns:
+        Formatted text for display
+    """
+    text = text.replace('\n', ' ').replace('\r', ' ')
+    text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
+    
+    if max_chars > 0 and len(text) > max_chars:
+        return text[:max_chars] + "..."
+    return text
 
 
 def compute_span_overlap_iou(span1: Tuple[int, int], span2: Tuple[int, int]) -> float:
@@ -266,8 +352,8 @@ def sample_spans_for_paragraph(
     max_spans_per_par: int = 20,
     min_anchors: int = 4,
     max_anchors: int = 10,
-    overlap_threshold: float = 0.9,
-    require_letter_start: bool = True,
+    overlap_threshold: float = 0.7,
+    require_letter_start: bool = False,
 ) -> List[Dict]:
     """
     Deterministic span sampler for a paragraph.
@@ -318,7 +404,37 @@ def sample_spans_for_paragraph(
     covered = set()
     candidate_spans = []
     
-    # Step 5: Generate spans from each anchor and target length
+    # Step 4.5: FIRST add individual units as span candidates (sentences/clauses)
+    # This ensures we capture distinct semantic units, not just prefixes
+    for unit_idx, unit in enumerate(units):
+        unit_text = unit.text.strip()
+        
+        # Quality filter
+        if not is_well_formed_span(unit_text, require_letter_start=require_letter_start):
+            continue
+        
+        # Ensure ends at complete word
+        span_text = unit_text
+        span_start = unit.start_char
+        span_end = unit.end_char
+        
+        # Adjust to strip trailing incomplete words if any
+        if span_text and not span_text[-1].isalnum() and len(span_text) > 1:
+            # Already ends properly (with punctuation)
+            pass
+        
+        span_token_len = len(word_tokenize(span_text))
+        
+        candidate_spans.append({
+            'span_start_char': span_start,
+            'span_end_char': span_end,
+            'span_text': span_text,
+            'span_token_len': span_token_len,
+            'anchor_idx': unit_idx,
+            'units_covered': [unit_idx],
+        })
+    
+    # Step 5: Generate spans from each anchor and target length (accumulated)
     for anchor_idx in anchors:
         # Prefer uncovered anchors; shift if needed
         actual_anchor = anchor_idx
@@ -344,21 +460,55 @@ def sample_spans_for_paragraph(
                     break
                 end_unit_idx = j
             
-            # Extract span text using char offsets (no re-joining)
+            # Extract span text using char offsets
             span_start = units[actual_anchor].start_char
             span_end = units[end_unit_idx].end_char
-            span_text = text[span_start:span_end].strip()
+            span_text_raw = text[span_start:span_end]
             
-            # Quality filter
+            # Smart strip: remove leading/trailing whitespace but preserve word boundaries
+            span_text = span_text_raw.strip()
+            
+            # If stripped, adjust offsets to match
+            if span_text != span_text_raw:
+                # Find actual start position after stripping
+                lstrip_offset = len(span_text_raw) - len(span_text_raw.lstrip())
+                rstrip_offset = len(span_text_raw) - len(span_text_raw.rstrip())
+                span_start = span_start + lstrip_offset
+                span_end = span_end - rstrip_offset
+            
+            # Quality filter (before adjusting for word boundaries)
             if not is_well_formed_span(span_text, require_letter_start=require_letter_start):
                 continue
             
-            # Recompute char range after strip (adjust if needed)
-            # Find where stripped text actually starts/ends in original
-            stripped_start = text.find(span_text, span_start, span_end + 1)
-            if stripped_start != -1:
-                span_start = stripped_start
-                span_end = stripped_start + len(span_text)
+            # Ensure span starts at word boundary if it starts mid-word
+            # Look back to find start of word
+            if span_start > 0 and text[span_start - 1:span_start + 1].isalpha():
+                # Started mid-word, find word start
+                word_start = span_start
+                while word_start > 0 and text[word_start - 1].isalnum():
+                    word_start -= 1
+                if word_start < span_start:
+                    span_start = word_start
+                    span_text = text[span_start:span_end].strip()
+                    
+                    # Re-validate after adjustment
+                    if not is_well_formed_span(span_text, require_letter_start=require_letter_start):
+                        continue
+            
+            # Ensure span ends at complete word
+            # Look ahead to finish the last word if cut off mid-word
+            if span_end < len(text) and text[span_end - 1:span_end + 1].replace(' ', '').isalnum():
+                # Might have cut mid-word, extend to word end
+                word_end = span_end
+                while word_end < len(text) and text[word_end].isalnum():
+                    word_end += 1
+                if word_end > span_end:
+                    span_end = word_end
+                    span_text = text[span_start:span_end].strip()
+                    
+                    # Re-validate after adjustment
+                    if not is_well_formed_span(span_text, require_letter_start=require_letter_start):
+                        continue
             
             span_token_len = len(word_tokenize(span_text))
             units_covered_list = list(range(actual_anchor, end_unit_idx + 1))
@@ -376,7 +526,7 @@ def sample_spans_for_paragraph(
             for u_idx in units_covered_list:
                 covered.add(u_idx)
     
-    # Step 6: Deduplicate by overlap
+    # Step 6: Deduplicate by overlap AND substring containment
     final_spans = []
     seen_ranges = []
     
@@ -386,9 +536,24 @@ def sample_spans_for_paragraph(
         # Check overlap with existing spans
         is_duplicate = False
         for existing_range in seen_ranges:
-            if compute_span_overlap_iou(span_range, existing_range) > overlap_threshold:
+            iou = compute_span_overlap_iou(span_range, existing_range)
+            
+            # IoU-based deduplication
+            if iou > overlap_threshold:
                 is_duplicate = True
                 break
+            
+            # Substring containment check (one span fully contains the other)
+            s1_start, s1_end = span_range
+            s2_start, s2_end = existing_range
+            
+            # Current span is substring of existing span
+            if s1_start >= s2_start and s1_end <= s2_end and (s1_end - s1_start) < (s2_end - s2_start):
+                is_duplicate = True
+                break
+            
+            # Existing span is substring of current span (keep current, remove existing)
+            # This case is handled by iterating forward, so we skip it here
         
         if not is_duplicate:
             final_spans.append(span)
@@ -397,6 +562,23 @@ def sample_spans_for_paragraph(
         # Cap total spans
         if len(final_spans) >= max_spans_per_par:
             break
+    
+    # Step 7: Fallback if no spans generated (relaxed quality filter)
+    if len(final_spans) == 0 and len(candidate_spans) > 0:
+        # Try again without letter start requirement (already relaxed by default)
+        # If still nothing, take the longest candidate span as fallback
+        fallback_candidates = sorted(
+            candidate_spans, 
+            key=lambda s: s['span_token_len'], 
+            reverse=True
+        )[:max_spans_per_par]
+        
+        # Re-check with minimal quality filter (just non-empty)
+        for span in fallback_candidates:
+            if len(span['span_text'].strip()) > 0:
+                final_spans.append(span)
+                if len(final_spans) >= max_spans_per_par:
+                    break
     
     return final_spans
 
