@@ -366,6 +366,7 @@ def sample_spans_for_paragraph(
     max_anchors: int = 15,
     overlap_threshold: float = 0.7,
     require_letter_start: bool = False,
+    max_span_len_tokens: int = 40,
 ) -> List[Dict]:
     """
     Deterministic span sampler for a paragraph.
@@ -388,6 +389,7 @@ def sample_spans_for_paragraph(
         min_anchors, max_anchors: Anchor count constraints
         overlap_threshold: IoU threshold for deduplication
         require_letter_start: Enforce spans start with letter
+        max_span_len_tokens: Maximum allowed span length in tokens (default: 40)
         
     Returns:
         List of span dictionaries with keys:
@@ -439,6 +441,10 @@ def sample_spans_for_paragraph(
         
         # Filter out single-word spans (uninformative, could be keyword triggering)
         if span_token_len < 2:
+            continue
+        
+        # Filter out overly long spans (prevents ambiguous mini-paragraph spans)
+        if span_token_len > max_span_len_tokens:
             continue
         
         candidate_spans.append({
@@ -531,6 +537,10 @@ def sample_spans_for_paragraph(
             
             # Filter out single-word spans (uninformative, could be keyword triggering)
             if span_token_len < 2:
+                continue
+            
+            # Filter out overly long spans (prevents ambiguous mini-paragraph spans)
+            if span_token_len > max_span_len_tokens:
                 continue
             
             candidate_spans.append({
