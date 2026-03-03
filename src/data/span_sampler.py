@@ -437,8 +437,8 @@ def build_span_training_dataset(
         span_data.append({
             'par_id': row['par_id'],
             'span_text': row['span_text'],
-            'span_start_char': row['span_start'],
-            'span_end_char': row['span_end'],
+            'span_start_char': row['span_start_norm'],
+            'span_end_char': row['span_finish_norm'],
             'label': 1,
             'source': 'annotation'
         })
