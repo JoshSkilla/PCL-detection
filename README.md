@@ -6,6 +6,7 @@ Binary classification of Patronising and Condescending Language (PCL) in paragra
 
 ```
 PCL-detection/
+├── BestModel/
 ├── data/
 ├── experiments/
 ├── notebooks/
@@ -13,6 +14,15 @@ PCL-detection/
 ├── src/
 └── requirements.txt
 ```
+
+### BestModel/
+
+Final trained model and submission files:
+
+- `03_localised_pcl_token.ipynb` — Copy of the main training notebook
+- `best_model.pt` — Trained model checkpoint (ALBERT-large, token-level classifier)
+- `dev.txt` — Predictions on dev set (one label per line)
+- `test.txt` — Predictions on test set (submission file)
 
 ### data/
 
@@ -32,11 +42,6 @@ Jupyter notebooks for model development:
 - `05_localised_pcl_sampling.ipynb` — Span sampling strategies
 
 Also contains `outputs/` and `runs/` subdirectories with checkpoints from training runs.
-
-**experiments/token-level/** — Final model outputs:
-- `best_model.pt` — Trained model checkpoint
-- `dev.txt` — Predictions on dev set (one label per line)
-- `test.txt` — Predictions on test set (submission file)
 
 ### notebooks/
 
@@ -66,7 +71,7 @@ Reusable Python modules:
 - `span_sampler.py` — Negative span sampling strategies
 
 **src/training/**
-- `loss.py` — Custom loss functions (focal loss, class-weighted BCE)
+- `loss.py` — Custom loss functions (class-weighted BCE)
 - `metrics.py` — F1 computation and evaluation utilities
 - `search_utils.py` — Optuna objective functions and search helpers
 - `span_classifier.py` — Span-level classifier model and aggregation logic
