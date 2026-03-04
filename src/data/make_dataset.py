@@ -459,6 +459,189 @@ def truncation_rate_by_label(tokenizer, df, max_len: int):
         "neg_p99_len": int(np.percentile(lens[neg], 99)) if neg.any() else None,
     }
 
+
+# ---------------------------------------------------------------------
+# Test Dataset Loader
+# ---------------------------------------------------------------------
+
+def load_test_dataset(test_path: Optional[Path] = None) -> pd.DataFrame:
+    """
+    Load test.tsv for final evaluation (no labels).
+    
+    Returns DataFrame with columns: par_id, art_id, keyword, country_code, text
+    Order is preserved (important for submission).
+    """
+    if test_path is None:
+        test_path = RAW_DIR / "test.tsv"
+    
+    test_df = pd.read_csv(test_path, sep="\t", header=None)
+    test_df.columns = ["par_id", "art_id", "keyword", "country_code", "text"]
+    test_df["text"] = test_df["text"].map(_to_str_safe)
+    
+    return test_df
+
+
+# ---------------------------------------------------------------------
+# Evaluation Helpers
+# ---------------------------------------------------------------------
+
+def get_predictions_from_model(
+    model,
+    df: pd.DataFrame,
+    tokenizer,
+    max_len: int,
+    device: str,
+    batch_size: int = 32,
+    use_amp: bool = False,
+    amp_dtype=None,
+    threshold: float = 0.5,
+) -> List[int]:
+    """
+    Run model inference on a DataFrame and return binary predictions.
+    
+    Args:
+        model: Trained model with forward() returning dict with 'logits'
+        df: DataFrame with 'text' column
+        tokenizer: HuggingFace tokenizer
+        max_len: Max sequence length
+        device: 'cuda' or 'cpu'
+        batch_size: Inference batch size
+        use_amp: Use automatic mixed precision
+        amp_dtype: AMP dtype (torch.float16 or torch.bfloat16)
+        threshold: Classification threshold (default 0.5)
+    
+    Returns:
+        List of predictions (0 or 1) in same order as input df
+    """
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+    
+    model.eval()
+    
+    # Tokenize all texts
+    texts = df["text"].fillna("").astype(str).tolist()
+    encodings = tokenizer(
+        texts,
+        max_length=max_len,
+        padding="max_length",
+        truncation=True,
+        return_tensors="pt",
+    )
+    
+    dataset = TensorDataset(
+        encodings["input_ids"],
+        encodings["attention_mask"],
+        encodings.get("token_type_ids", torch.zeros_like(encodings["input_ids"])),
+    )
+    
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    
+    all_preds = []
+    
+    with torch.no_grad():
+        for batch in loader:
+            input_ids, attention_mask, token_type_ids = batch
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+            token_type_ids = token_type_ids.to(device)
+            
+            if use_amp and amp_dtype is not None:
+                with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        token_type_ids=token_type_ids,
+                    )
+            else:
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    token_type_ids=token_type_ids,
+                )
+            
+            # Handle different output formats
+            if isinstance(outputs, dict):
+                logits = outputs.get("logits", outputs.get("paragraph_logits"))
+            else:
+                logits = outputs[0] if isinstance(outputs, tuple) else outputs
+            
+            probs = torch.sigmoid(logits).cpu().numpy().flatten()
+            preds = (probs >= threshold).astype(int).tolist()
+            all_preds.extend(preds)
+    
+    return all_preds
+
+
+def save_predictions_to_txt(predictions: List[int], output_path: Path) -> None:
+    """
+    Save predictions to text file (one prediction per line, 0 or 1).
+    
+    Args:
+        predictions: List of 0/1 predictions
+        output_path: Path to output .txt file
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(output_path, "w") as f:
+        for pred in predictions:
+            f.write(f"{pred}\n")
+    
+    print(f"Saved {len(predictions)} predictions to {output_path}")
+
+
+def generate_submission_files(
+    model,
+    dev_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    tokenizer,
+    max_len: int,
+    device: str,
+    output_dir: Path,
+    batch_size: int = 32,
+    use_amp: bool = False,
+    amp_dtype=None,
+    threshold: float = 0.5,
+) -> Tuple[List[int], List[int]]:
+    """
+    Generate dev.txt and test.txt submission files.
+    
+    Args:
+        model: Trained model
+        dev_df: Dev DataFrame with 'text' column
+        test_df: Test DataFrame with 'text' column
+        tokenizer, max_len, device, batch_size, use_amp, amp_dtype, threshold: Inference params
+        output_dir: Directory to save dev.txt and test.txt
+    
+    Returns:
+        Tuple of (dev_predictions, test_predictions)
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"Generating predictions for {len(dev_df)} dev examples...")
+    dev_preds = get_predictions_from_model(
+        model, dev_df, tokenizer, max_len, device,
+        batch_size, use_amp, amp_dtype, threshold
+    )
+    save_predictions_to_txt(dev_preds, output_dir / "dev.txt")
+    
+    print(f"Generating predictions for {len(test_df)} test examples...")
+    test_preds = get_predictions_from_model(
+        model, test_df, tokenizer, max_len, device,
+        batch_size, use_amp, amp_dtype, threshold
+    )
+    save_predictions_to_txt(test_preds, output_dir / "test.txt")
+    
+    # Summary
+    print(f"\n{'='*50}")
+    print(f"Dev:  {sum(dev_preds)}/{len(dev_preds)} predicted as PCL ({100*sum(dev_preds)/len(dev_preds):.1f}%)")
+    print(f"Test: {sum(test_preds)}/{len(test_preds)} predicted as PCL ({100*sum(test_preds)/len(test_preds):.1f}%)")
+    print(f"{'='*50}")
+    
+    return dev_preds, test_preds
+
+
 if __name__ == "__main__":
     make_pcl_task1_dataset(save=True)
     # merge_pcl_task2_dataset(save=True)
