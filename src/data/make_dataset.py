@@ -561,7 +561,7 @@ def get_predictions_from_model(
             
             # Handle different output formats
             if isinstance(outputs, dict):
-                logits = outputs.get("logits", outputs.get("paragraph_logits"))
+                logits = outputs.get("logits") or outputs.get("paragraph_logits") or outputs.get("paragraph_logit")
             else:
                 logits = outputs[0] if isinstance(outputs, tuple) else outputs
             

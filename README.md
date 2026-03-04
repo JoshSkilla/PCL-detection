@@ -33,6 +33,11 @@ Jupyter notebooks for model development:
 
 Also contains `outputs/` and `runs/` subdirectories with checkpoints from training runs.
 
+**experiments/token-level/** — Final model outputs:
+- `best_model.pt` — Trained model checkpoint
+- `dev.txt` — Predictions on dev set (one label per line)
+- `test.txt` — Predictions on test set (submission file)
+
 ### notebooks/
 
 Exploratory data analysis:
