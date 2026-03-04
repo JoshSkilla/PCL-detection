@@ -653,15 +653,16 @@ def build_span_training_dataset(
             'span_text': row['span_text'],
             'span_start_char': row['span_start_norm'],
             'span_end_char': row['span_finish_norm'],
-            'label': 1,
+            'span_bin': 1,
             'source': 'annotation'
         })
     
     n_positive = len(span_data)
     n_negative_target = int(n_positive * negative_ratio)
     
-    # 2. Negative examples: Sample from non-PCL paragraphs
-    print(f"\nSampling {n_negative_target} negative spans from non-PCL paragraphs...")
+    # 2. Negative examples: Sample from ALL non-PCL paragraphs, then randomly subsample
+    # This ensures better diversity and prevents overfitting to early paragraphs
+    print(f"\nGenerating negative span pool from ALL non-PCL paragraphs...")
     non_pcl_pars = train_df[train_df['label_bin'] == 0]
     
     negative_spans = []
@@ -683,16 +684,18 @@ def build_span_training_dataset(
                 'span_text': span['span_text'],
                 'span_start_char': span['span_start_char'],
                 'span_end_char': span['span_end_char'],
-                'label': 0,
+                'span_bin': 0,
                 'source': 'sampled_neg'
             })
-        
-        # Stop when we have enough negatives
-        if len(negative_spans) >= n_negative_target:
-            break
     
-    # Trim to target
-    negative_spans = negative_spans[:n_negative_target]
+    # Randomly sample from full pool (better diversity, no overfitting to early paragraphs)
+    print(f"\nRandomly sampling {n_negative_target:,} from {len(negative_spans):,} total negative spans...")
+    if len(negative_spans) > n_negative_target:
+        import random
+        random.seed(42)  # Deterministic sampling
+        negative_spans = random.sample(negative_spans, n_negative_target)
+    else:
+        print(f"  Warning: Only {len(negative_spans)} spans available (wanted {n_negative_target})")
     span_data.extend(negative_spans)
     
     # Convert to DataFrame
@@ -702,7 +705,7 @@ def build_span_training_dataset(
     print(f"  Positive (PCL): {n_positive:,}")
     print(f"  Negative (non-PCL): {len(negative_spans):,}")
     print(f"  Total: {len(span_train_df):,}")
-    print(f"  Class balance: {span_train_df['label'].value_counts(normalize=True).to_dict()}")
+    print(f"  Class balance: {span_train_df['span_bin'].value_counts(normalize=True).to_dict()}")
     
     return span_train_df
 
